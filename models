@@ -1,1 +1,10 @@
+import torch
+import torch.nn as nn
+import numpy as np
+import matplotlib.pyplot as plt
 
+device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
+print(f"사용 중인 디바이스: {device}")
+
+torch.manual_seed(42)
+np.random.seed(42)
