@@ -1,0 +1,103 @@
+nu = 0.01 / np.pi
+N_u = 100
+N_f = 5000  
+
+x_f = (torch.rand(N_f, 1, device=device) * 2) - 1.0
+t_f = torch.rand(N_f, 1, device=device) * 0.99
+x_ic = (torch.rand(N_u, 1, device=device) * 2) - 1.0
+t_ic = torch.zeros_like(x_ic)
+u_ic = -torch.sin(np.pi * x_ic)
+t_bc = torch.rand(N_u, 1, device=device) * 0.99
+x_bc = torch.where(torch.rand(N_u, 1, device=device) > 0.5, torch.ones_like(t_bc), -torch.ones_like(t_bc))
+u_bc = torch.zeros_like(t_bc)
+
+layers = [2, 20, 20, 20, 20, 20, 20, 20, 20, 1]
+model = InterpretablePINN(layers).to(device)
+
+
+# --- 훈련 루프 (Adam 5000 + L-BFGS) ---
+lambda_concept = 0.01
+lambda_indep = 0.001
+lambda_rec = 0.001
+
+print("Adam 최적화 시작 (충분한 전역 탐색)...")
+optimizer_adam = torch.optim.Adam(model.parameters(), lr=1e-3)
+epochs_adam = 5000  # [수정] 1000 -> 5000으로 원상 복구
+
+for epoch in range(epochs_adam):
+    # 드롭아웃 스케줄링 시점도 전체 5000 에폭에 맞춰 66% 지점(3300)으로 자동 이동됨
+    if epoch == int(epochs_adam * 0.66):
+        model.bottleneck.dropout_eps.p = 0.3
+        print(f"  -> Epoch {epoch}: 잔차 드롭아웃 0.3으로 상향 (Mid-training)")
+
+    model.train()
+    optimizer_adam.zero_grad()
+    
+    loss_pde, loss_concept, loss_indep, loss_rec = compute_all_losses(model, x_f, t_f, nu)
+    
+    u_ic_pred = model(x_ic, t_ic)[0]
+    u_bc_pred = model(x_bc, t_bc)[0]
+    loss_ic = torch.mean((u_ic_pred - u_ic)**2)
+    loss_bc = torch.mean((u_bc_pred - u_bc)**2)
+    
+    loss = loss_pde + loss_ic + loss_bc + \
+           (lambda_concept * loss_concept) + \
+           (lambda_indep * loss_indep) + \
+           (lambda_rec * loss_rec)
+  
+    loss.backward()
+    optimizer_adam.step()
+
+    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+    
+    # 500번마다 출력
+    if (epoch+1) % 500 == 0: 
+        print(f"Adam Epoch {epoch+1:04d} | Total Loss: {loss.item():.4e}")
+
+print("L-BFGS 최적화 시작 (미세 조정)...")
+model.eval()
+
+# (이하 L-BFGS closure 코드 및 시각화/검증 코드는 완전히 동일)
+optimizer_lbfgs = torch.optim.LBFGS(model.parameters(), max_iter=1000, tolerance_grad=1e-5, tolerance_change=1e-9)
+
+def closure():
+    optimizer_lbfgs.zero_grad()
+    loss_pde, loss_concept, loss_indep, loss_rec = compute_all_losses(model, x_f, t_f, nu)
+    
+    u_ic_pred = model(x_ic, t_ic)[0]
+    u_bc_pred = model(x_bc, t_bc)[0]
+    loss_ic = torch.mean((u_ic_pred - u_ic)**2)
+    loss_bc = torch.mean((u_bc_pred - u_bc)**2)
+    
+    loss = loss_pde + loss_ic + loss_bc + \
+           (lambda_concept * loss_concept) + \
+           (lambda_indep * loss_indep) + \
+           (lambda_rec * loss_rec)
+           
+    loss.backward()
+    
+    return loss
+
+optimizer_lbfgs.step(closure)
+final_loss = closure()
+print(f"최종 Loss: {final_loss.item():.4e}")
+
+
+print("시각화 결과 렌더링 중...")
+# 평가 모드는 위에서 켰으므로 별도 선언 없이 추론 진행
+x_test = torch.linspace(-1, 1, 256).view(-1, 1).to(device)
+t_test = torch.ones_like(x_test) * 0.5
+
+with torch.no_grad():
+    u_pred, _, _, _ = model(x_test, t_test)
+    u_pred = u_pred.cpu().numpy()
+x_test_np = x_test.cpu().numpy()
+
+plt.figure(figsize=(8, 5))
+plt.plot(x_test_np, u_pred, 'b-', linewidth=2, label='Interpretable PINN (t=0.5)')
+plt.title("Interpretable PINN - Shockwave Formation")
+plt.xlabel("x")
+plt.ylabel("u(x,t)")
+plt.grid(True, linestyle='--')
+plt.legend()
+plt.show()
