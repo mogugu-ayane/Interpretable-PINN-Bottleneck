@@ -8,3 +8,44 @@ print(f"사용 중인 디바이스: {device}")
 
 torch.manual_seed(42)
 np.random.seed(42)
+
+class PINNBottleneck(nn.Module):
+    def __init__(self, hidden_dim, dropout_rate=0.1):
+        super().__init__()
+        self.hidden_dim = hidden_dim
+        self.W_k = nn.Linear(hidden_dim, hidden_dim)
+        self.W_u = nn.Linear(hidden_dim, hidden_dim)
+        self.W_eps = nn.Linear(hidden_dim, hidden_dim)
+        self.dropout_eps = nn.Dropout(dropout_rate)
+
+    def generate_gt_labels(self, u, u_x, u_xx, nu):
+        conv_term_sq = (u * u_x)**2
+        diff_term_sq = (nu * u_xx)**2
+        y_conv = conv_term_sq / (conv_term_sq + diff_term_sq + 1e-8)
+        return y_conv, 1.0 - y_conv
+
+    def forward(self, h):
+        k_hat = self.W_k(h)
+        u_hat = self.W_u(h)
+        eps = self.dropout_eps(self.W_eps(h))
+
+        k_hat_detached = k_hat.detach()
+
+        # 1. 특이점이 없는 순수 내적의 제곱 계산
+        dot_sq_u = torch.sum(u_hat * k_hat_detached, dim=-1)**2
+        dot_sq_eps = torch.sum(eps * k_hat_detached, dim=-1)**2
+
+        # 2. [연구자님의 아이디어 적용] a/(x+c) 형태로 Squash 하여 L-BFGS Hessian 폭발 방지
+        # 분모가 최소 1.0이므로 특이점(NaN) 절대 불가, 최댓값은 1.0으로 Bounded
+        loss_indep_u = torch.mean(dot_sq_u / (dot_sq_u + 1.0))
+        loss_indep_eps = torch.mean(dot_sq_eps / (dot_sq_eps + 1.0))
+        
+        loss_indep = loss_indep_u + loss_indep_eps
+
+        target_u = h - k_hat_detached
+        loss_rec = torch.mean((u_hat - target_u)**2)
+
+        h_bar = k_hat + u_hat + eps
+        
+        return h_bar, k_hat, u_hat, eps, loss_indep, loss_rec
+
