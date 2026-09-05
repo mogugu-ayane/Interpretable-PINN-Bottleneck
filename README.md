@@ -9,3 +9,13 @@ The Concept Bottleneck PINN successfully decoupled the 1D Burgers' equation into
 Convection (49.29%)
 Diffusion (47.71%)
 Unknown Dynamics were strictly suppressed to 0.00%,
+
+loop: cariculum
+loss: PINN loss code
+models: bottleneck code
+pinn: Pinn engine code
+
+
+
+
+Concept Bottleneck PINN for 1D Burgers' Equation: Mechanistic Interpretability in Continuous Physical Systems (Inspired by Scaling Inherently Interpretable Language Models, Guide Labs)
