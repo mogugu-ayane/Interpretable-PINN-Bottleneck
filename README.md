@@ -13,9 +13,9 @@ Unknown Dynamics were strictly suppressed to 0.00%,
 loop: cariculum
 loss: PINN loss code
 models: bottleneck code
-pinn: Pinn engine code
+pinn: Pinn engine code\
 
 
-
+interpretable: 50%
 
 Concept Bottleneck PINN for 1D Burgers' Equation: Mechanistic Interpretability in Continuous Physical Systems (Inspired by Scaling Inherently Interpretable Language Models, Guide Labs)
