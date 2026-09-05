@@ -3,6 +3,7 @@
 **Physics-Informed Neural Networks with Concept Bottleneck Layers:** Disentangling Known Physics, Unmodeled Dynamics, and Residuals for Physical Steering & Faithfulness.
 
 *<img width="578" height="152" alt="image" src="https://github.com/user-attachments/assets/25e46d08-5653-4632-9ca9-276d6732ba22" />*
+*<img width="926" height="155" alt="image" src="https://github.com/user-attachments/assets/ea441b8e-c6b9-4bb2-beb8-dee05ae9d26c" />*
 
 **Concept Bottleneck PINN for 1D Burgers' Equation:** Mechanistic Interpretability in Continuous Physical Systems (Inspired by *Scaling Inherently Interpretable Language Models*, Guide Labs)
 
