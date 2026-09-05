@@ -8,6 +8,8 @@
 
 The Concept Bottleneck PINN successfully decoupled the 1D Burgers' equation into Convection (49.29%) and Diffusion (47.71%). Most importantly, Unknown Dynamics were strictly suppressed to 0.00%.
 
+interpret achieved approximately 60%.
+
 **Code Navigation:**
 * `loop.py`: Curriculum learning loop
 * `loss.py`: PINN custom loss code
