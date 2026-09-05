@@ -13,7 +13,7 @@ Unknown Dynamics were strictly suppressed to 0.00%,
 loop: cariculum
 loss: PINN loss code
 models: bottleneck code
-pinn: Pinn engine code\
+pinn: Pinn engine code
 
 
 interpretable: 50%
