@@ -1,103 +1,77 @@
-nu = 0.01 / np.pi
-N_u = 100
-N_f = 5000  
+import torch
+import torch.optim as optim
+import torch.nn as nn
 
-x_f = (torch.rand(N_f, 1, device=device) * 2) - 1.0
-t_f = torch.rand(N_f, 1, device=device) * 0.99
-x_ic = (torch.rand(N_u, 1, device=device) * 2) - 1.0
-t_ic = torch.zeros_like(x_ic)
-u_ic = -torch.sin(np.pi * x_ic)
-t_bc = torch.rand(N_u, 1, device=device) * 0.99
-x_bc = torch.where(torch.rand(N_u, 1, device=device) > 0.5, torch.ones_like(t_bc), -torch.ones_like(t_bc))
-u_bc = torch.zeros_like(t_bc)
+def train_pinn_burgers(model, data_dict, nu, adam_iters=5000, lbfgs_iters=5000):
+    x_col, t_col = data_dict['col']
+    x_ic, t_ic, u_ic = data_dict['ic']
+    x_bc, t_bc, u_bc = data_dict['bc']
 
-layers = [2, 20, 20, 20, 20, 20, 20, 20, 20, 1]
-model = InterpretablePINN(layers).to(device)
+    # 🚨 영점 초기화
+    for param in model.bottleneck.parameters():
+        nn.init.zeros_(param)
 
+    opt_adam_u = optim.Adam([{'params': model.net_u_hidden.parameters()}, {'params': model.W_u.parameters()}], lr=1e-3)
+    opt_adam_dyn = optim.Adam([{'params': model.net_dyn_hidden.parameters()}, {'params': model.bottleneck.parameters()}], lr=1e-4)
 
-# --- 훈련 루프 (Adam 5000 + L-BFGS) ---
-lambda_concept = 0.01
-lambda_indep = 0.001
-lambda_rec = 0.001
+    params_u_only = list(model.net_u_hidden.parameters()) + list(model.W_u.parameters())
+    opt_lbfgs = optim.LBFGS(params_u_only, lr=1.0, max_iter=lbfgs_iters, line_search_fn="strong_wolfe")
 
-print("Adam 최적화 시작 (충분한 전역 탐색)...")
-optimizer_adam = torch.optim.Adam(model.parameters(), lr=1e-3)
-epochs_adam = 5000  # [수정] 1000 -> 5000으로 원상 복구
-
-for epoch in range(epochs_adam):
-    # 드롭아웃 스케줄링 시점도 전체 5000 에폭에 맞춰 66% 지점(3300)으로 자동 이동됨
-    if epoch == int(epochs_adam * 0.66):
-        model.bottleneck.dropout_eps.p = 0.3
-        print(f"  -> Epoch {epoch}: 잔차 드롭아웃 0.3으로 상향 (Mid-training)")
+    # ==========================================
+    # 🚨 경계 조건 가중치 (IC/BC Dominance)
+    # ==========================================
+    weight_bc = 100.0
 
     model.train()
-    optimizer_adam.zero_grad()
-    
-    loss_pde, loss_concept, loss_indep, loss_rec = compute_all_losses(model, x_f, t_f, nu)
-    
-    u_ic_pred = model(x_ic, t_ic)[0]
-    u_bc_pred = model(x_bc, t_bc)[0]
-    loss_ic = torch.mean((u_ic_pred - u_ic)**2)
-    loss_bc = torch.mean((u_bc_pred - u_bc)**2)
-    
-    loss = loss_pde + loss_ic + loss_bc + \
-           (lambda_concept * loss_concept) + \
-           (lambda_indep * loss_indep) + \
-           (lambda_rec * loss_rec)
-  
-    loss.backward()
-    optimizer_adam.step()
+    print("--- Transitioning to Adam ---")
+    for epoch in range(adam_iters):
+        opt_adam_u.zero_grad()
+        opt_adam_dyn.zero_grad()
 
-    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-    
-    # 500번마다 출력
-    if (epoch+1) % 500 == 0: 
-        print(f"Adam Epoch {epoch+1:04d} | Total Loss: {loss.item():.4e}")
+        x_c = x_col.clone().detach().requires_grad_(True)
+        t_c = t_col.clone().detach().requires_grad_(True)
 
-print("L-BFGS 최적화 시작 (미세 조정)...")
-model.eval()
+        enable_dyn = (epoch >= 2000)
 
-# (이하 L-BFGS closure 코드 및 시각화/검증 코드는 완전히 동일)
-optimizer_lbfgs = torch.optim.LBFGS(model.parameters(), max_iter=1000, tolerance_grad=1e-5, tolerance_change=1e-9)
+        loss_pde_u, loss_pde_dyn, loss_u_reg, loss_indep = compute_all_losses(model, x_c, t_c, nu, enable_dyn=enable_dyn)
 
-def closure():
-    optimizer_lbfgs.zero_grad()
-    loss_pde, loss_concept, loss_indep, loss_rec = compute_all_losses(model, x_f, t_f, nu)
-    
-    u_ic_pred = model(x_ic, t_ic)[0]
-    u_bc_pred = model(x_bc, t_bc)[0]
-    loss_ic = torch.mean((u_ic_pred - u_ic)**2)
-    loss_bc = torch.mean((u_bc_pred - u_bc)**2)
-    
-    loss = loss_pde + loss_ic + loss_bc + \
-           (lambda_concept * loss_concept) + \
-           (lambda_indep * loss_indep) + \
-           (lambda_rec * loss_rec)
-           
-    loss.backward()
-    
-    return loss
+        loss_ic = torch.mean((model(x_ic, t_ic)[0] - u_ic)**2)
+        loss_bc = torch.mean((model(x_bc, t_bc)[0] - u_bc)**2)
 
-optimizer_lbfgs.step(closure)
-final_loss = closure()
-print(f"최종 Loss: {final_loss.item():.4e}")
+        if not enable_dyn:
+            # Phase 1: 순수 PINN 모드
+            loss_total = weight_bc * (loss_ic + loss_bc) + loss_pde_u
+            loss_total.backward()
+            opt_adam_u.step()
+        else:
+            # Phase 2: 문서 Step 4의 궁극의 목적 함수 조합[cite: 1]
+            loss_domain = loss_pde_u + loss_pde_dyn + loss_u_reg + loss_indep
+            loss_total = weight_bc * (loss_ic + loss_bc) + loss_domain
+            loss_total.backward()
 
+            opt_adam_u.step()
+            opt_adam_dyn.step()
 
-print("시각화 결과 렌더링 중...")
-# 평가 모드는 위에서 켰으므로 별도 선언 없이 추론 진행
-x_test = torch.linspace(-1, 1, 256).view(-1, 1).to(device)
-t_test = torch.ones_like(x_test) * 0.5
+        if epoch % 500 == 0:
+            phase = "Phase 2 (Interpret)" if enable_dyn else "Phase 1 (Pure PINN)"
+            print(f"[Adam] Epoch {epoch:4d} | {phase} | Total Loss: {loss_total.item():.6f}")
 
-with torch.no_grad():
-    u_pred, _, _, _ = model(x_test, t_test)
-    u_pred = u_pred.cpu().numpy()
-x_test_np = x_test.cpu().numpy()
+    print("--- Transitioning to L-BFGS ---")
+    def closure():
+        opt_lbfgs.zero_grad()
+        x_c = x_col.clone().detach().requires_grad_(True)
+        t_c = t_col.clone().detach().requires_grad_(True)
 
-plt.figure(figsize=(8, 5))
-plt.plot(x_test_np, u_pred, 'b-', linewidth=2, label='Interpretable PINN (t=0.5)')
-plt.title("Interpretable PINN - Shockwave Formation")
-plt.xlabel("x")
-plt.ylabel("u(x,t)")
-plt.grid(True, linestyle='--')
-plt.legend()
-plt.show()
+        loss_pde_u, _, _, _ = compute_all_losses(model, x_c, t_c, nu, enable_dyn=True)
+        loss_ic = torch.mean((model(x_ic, t_ic)[0] - u_ic)**2)
+        loss_bc = torch.mean((model(x_bc, t_bc)[0] - u_bc)**2)
+
+        # 🚨 L-BFGS에도 100배 가중치 유지 (구불구불한 꼼수 완벽 차단)
+        loss_total = weight_bc * (loss_ic + loss_bc) + loss_pde_u
+        loss_total.backward()
+        return loss_total
+
+    opt_lbfgs.step(closure)
+    print(f"[L-BFGS] Optimization Completed. Final Loss: {closure().item():.6f}")
+
+    return model
